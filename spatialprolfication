@@ -1,0 +1,265 @@
+library(adehabitatHR)
+library(sp)
+library(dplyr)
+library(scales)
+library(stars)
+library(ggplot2)
+library(tseries)
+
+# first Error checking function 
+#1. MEAN ABSOLUTE PERCENTAGE ERROR (MAPE)
+MAPE = function(y_actual,y_predict){
+  mean(abs((y_actual-y_predict)/y_actual))*100
+}
+
+#2. R SQUARED error metric -- Coefficient of Determination
+RSQUARE = function(y_actual,y_predict){
+  cor(y_actual,y_predict)^2 }
+
+# Program starts from here 
+
+setwd("E:/Wild_boar_and_ASF")
+
+
+ASF.data<- read.csv( "Upto_22520_ASF_Ob_526.csv", stringsAsFactors = TRUE)  # coordinates in meter scale
+# let's visualize some statistics of outbreak locations
+par(mfrow=c(2,2))
+#outbreak locations by start month
+aa=hist(ASF.data$MonthCount,main = "Outbreak days wrt Month",xlab = "Month (9/17/2019~5/20/2022)",ylab = "CaseLocations")  # find outbreak permoth
+#outbreak locations by year
+hist(ASF.data$Year,las=1,axes = TRUE,freq = TRUE,main = "Outbreak days wrt Year",xlab = "Year (9/17/2019~5/20/2022)"
+     ,xaxt='n',ylab = "")  # find outbreak permoth
+axis(side=1, at=seq(2019,2022, 1), labels=seq(2019,2022, 1))
+#outbreak locations by months
+mymonths <- c("Jan","Feb","Mar",
+              "Apr","May","Jun",
+              "Jul","Aug","Sep",
+              "Oct","Nov","Dec")
+hist(ASF.data$Month,breaks = 40,xaxt='n',axes = TRUE,main = "Monthly boutbreak",xlab = "Month",ylab = "CaseLocations")
+axis(side=1,at=seq(1,12,1),labels=mymonths)
+#####################################################
+# let's group the data wrt occurance date and plot the outbreak graph
+length(unique(ASF.data$Date))
+fltCases<-ASF.data %>%  group_by( Date ) %>% #filtering the cases based on date 
+  summarise(max = max(Cases..21.for.domestric.till.211006.))
+
+fltCases<-fltCases[order(fltCases$max),]
+#export the data for analyzing the daily growth pattern in desktop
+# write.csv(fltCases,'Daily ASF_data1.csv')
+getwd() # check current directory go to file and set the date with cumulative daily data and use lookup tadays
+# format(seq(as.Date("2014-01-13"), as.Date("2015-01-13"), by="days"), format="%m-%d-%Y") or can change and use lookup table for daily growth pattern 
+PrBoarDt<-read.csv('Daily ASF_data.csv') # processed data
+
+plot(PrBoarDt$Boar_cases,
+          xlab=("Day(10/3/2019~5/20/2022)"),ylab='WildBoarASFCases',xlim = c(0, 1000))
+plot(ASF.data$Long,ASF.data$Lat,xlab="Longitude", ylab="Latitue")
+
+###################################################
+#Now on lets make MCP parameters
+
+# GpData<-matrix(data="",nrow = 0,ncol = 0)
+# GpData=data.frame()
+timeframe<-"month"
+if (timeframe =="month") {
+mcpData<-{}
+mcpArea<-{} # 100% area 
+
+
+for (i in 1:max(ASF.data$MonthCount)){
+  mcpData[i]<-list(filter(ASF.data,ASF.data$MonthCount<=i))
+  dt=data.frame(mcpData[i])
+  dt$group<-"A"  # setting a group for removing "At least 5 relocations are required to fit an home range"
+  #colnames(dt) # check column names 
+  track<- subset(dt, select = c(group,Long_meter,Lat_meter))
+  coordinates(track) <- c("Long_meter" ,"Lat_meter")     # take coordinates with Sp package
+  # proj4string(track) # you can change projection butin our case its already in meter scale
+  # coordinates(track) <- c("Longitude", "Latitude")
+  # proj4string(track) <- CRS( "+init=epsg:5181")
+  
+  # for mcp
+  track.mcp<-mcp(track,unin = "m", unout= "km2",percent = 100)
+  mcpArea<-rbind(mcpArea,track.mcp$area)
+  fname<-paste0("MCP", "_", i, ".jpeg") #my file name of image 
+  jpeg(file=fname,height = 500,width = 300)  # to save the image
+  plot(track)
+  plot(track.mcp,col=alpha(1:5,0.5),add=TRUE)
+  dev.off() # to complete the writing process and return output to your monitor
+  }
+par(mfrow=c(1,1))
+plot(mcpArea)
+plot(track)
+plot(track.mcp,col=alpha(1:5,0.5),add=TRUE)
+#export the MCPdata for analyzing the monthly area growth pattern in desktop
+write.csv(mcpArea,'Monthly33_ MCP_ASF_data1.csv')
+# let's test the stationary of time series data 
+#Dickey-Fuller Test
+adf.test(mcpArea) 
+pp.test(mcpArea) #Phillips-Perron Unit Root Test
+
+# examining the logistic growth pattern we have fixed carrying capacity (asymptot value)
+# so, we are examining with normal logistic growth as y=(K/1+exp(lamda*t)) (K=105,938.58)
+tFrame<-seq(length(mcpArea[,1]))
+#examine initial start parameter
+sValue<-coef(lm(logit(mcpArea/100000)~tFrame)) # start value estimation 
+# let's fit the growth pattern 
+McpGroth<-nls(mcpArea~100266/(1+exp(-(a+lamda*tFrame))),
+            start=list(a=sValue[1],lamda=sValue[2]),trace=TRUE)
+print(c(AIC(McpGroth)[1],BIC(McpGroth)[1]))
+
+# McpGroth<-nls(mcpArea~105938.58/(1+exp(-(lamda*tFrame))),
+#               start=list(lamda=0.011),trace=TRUE)
+print(summary(McpGroth))
+
+a<-coef(McpGroth)[1]
+lamda<-coef(McpGroth)[2]
+# tPd<-c(1:100)
+
+# let's test the model fit with rsquare value 
+tPd<-c(1:length(mcpArea))
+# yP<-105938.58/(1+exp(-(a+lamda*tPd))) # Mcp area with covering some part of water
+yP<-100266/(1+exp(-(a+lamda*tPd)))  # total land of South Korea
+R2<-RSQUARE(y_actual = mcpArea,y_predict =  yP)
+ME<-MAPE(y_actual = mcpArea,y_predict =  yP)
+print(c(R2,ME))
+plot(yP,type="l")
+#export the MCPdata for analyzing the monthly area growth pattern in desktop
+# write.csv(yP,'predicted_ MCP_ASF_data1.csv')
+
+# yy=predict(McpGroth,mcpArea)
+# plot(yy)
+}
+#############################################################################
+# GpData<-matrix(data="",nrow = 0,ncol = 0)
+# GpData=data.frame()
+timeframe<-"Week"   # prediction for 500 days already 139 weeks
+if (timeframe =="Week") {
+  mcpData<-{}
+  mcpArea<-{} # 100% area 
+  
+  
+  for (i in 1:max(ASF.data$Week)){
+    mcpData[i]<-list(filter(ASF.data,ASF.data$Week<=i))
+    dt=data.frame(mcpData[i])
+    dt$group<-"A"  # setting a group for removing "At least 5 relocations are required to fit an home range"
+    #colnames(dt) # check column names 
+    track<- subset(dt, select = c(group,Long_meter,Lat_meter))
+    coordinates(track) <- c("Long_meter" ,"Lat_meter")     # take coordinates with Sp package
+    # proj4string(track) # you can change projection butin our case its already in meter scale
+    # coordinates(track) <- c("Longitude", "Latitude")
+    # proj4string(track) <- CRS( "+init=epsg:5181")
+    
+    # for mcp
+    track.mcp<-mcp(track,unin = "m", unout= "km2",percent = 100)
+    mcpArea<-rbind(mcpArea,track.mcp$area)
+    # #let's save the MCP data 
+    # fname<-paste0("MCP", "_", i, ".jpeg") #my file name of image 
+    # jpeg(file=fname,height = 500,width = 300)  # to save the image
+    # plot(track)
+    # plot(track.mcp,col=alpha(1:5,0.5),add=TRUE)
+    # dev.off() # to complete the writing process and return output to your monitor
+  }
+  par(mfrow=c(1,1))
+  plot(mcpArea)
+  plot(track)
+  plot(track.mcp,col=alpha(1:5,0.5),add=TRUE)
+  #export the MCPdata for analyzing the monthly area growth pattern in desktop
+  write.csv(mcpArea,'weekly_ MCP_ASF_data1.csv')
+  # let's test the stationary of time series data 
+  #Dickey-Fuller Test
+  adf.test(mcpArea) 
+  pp.test(mcpArea) #Phillips-Perron Unit Root Test
+  
+  # examining the logistic growth pattern we have fixed carrying capacity (asymptot value)
+  # so, we are examining with normal logistic growth as y=(K/1+exp(lamda*t)) (K=105,938.58)
+  tFrame<-seq(length(mcpArea[,1]))
+  #examine initial start parameter
+  sValue<-coef(lm(logit(mcpArea/100000)~tFrame)) # start value estimation 
+  # let's fit the growth pattern 
+  McpGroth<-nls(mcpArea~100266/(1+exp(-(a+lamda*tFrame))),
+                start=list(a=sValue[1],lamda=sValue[2]),trace=TRUE)
+  AIC(McpGroth)
+  BIC(McpGroth)
+  print(c(AIC(McpGroth)[1],BIC(McpGroth)[1]))
+  # McpGroth<-nls(mcpArea~105938.58/(1+exp(-(lamda*tFrame))),
+  #               start=list(lamda=0.011),trace=TRUE)
+  print(summary(McpGroth))
+  a<-coef(McpGroth)[1]
+  lamda<-coef(McpGroth)[2]
+  tPd<-c(1:length(mcpArea))
+  # yP<-105938.58/(1+exp(-(a+lamda*tPd))) # Mcp area with covering some part of water
+  yP<-100266/(1+exp(-(a+lamda*tPd)))  # total land of South Korea
+  R2<-RSQUARE(y_actual = mcpArea,y_predict =  yP)
+  ME<-MAPE(y_actual = mcpArea,y_predict =  yP)
+  print(c(R2,ME))
+  plot(yP,type="l")
+  #export the MCPdata for analyzing the monthly area growth pattern in desktop
+  write.csv(yP,'predicted_weekly MCP_ASF_data1.csv')
+}
+
+#let's check yearly
+
+timeframe<-"year"
+if (timeframe =="year") {
+  mcpData<-{}
+  mcpArea<-{} # 100% area 
+  
+  
+  for (i in 2019:max(ASF.data$Year)){
+    mcpData[i]<-list(filter(ASF.data,ASF.data$Year<=i))
+    dt=data.frame(mcpData[i])
+    dt$group<-"A"  # setting a group for removing "At least 5 relocations are required to fit an home range"
+    #colnames(dt) # check column names 
+    track<- subset(dt, select = c(group,Long_meter,Lat_meter))
+    coordinates(track) <- c("Long_meter" ,"Lat_meter")     # take coordinates with Sp package
+    # proj4string(track) # you can change projection butin our case its already in meter scale
+    # coordinates(track) <- c("Longitude", "Latitude")
+    # proj4string(track) <- CRS( "+init=epsg:5181")
+    
+    # for mcp
+    track.mcp<-mcp(track,unin = "m", unout= "km2",percent = 100)
+    mcpArea<-rbind(mcpArea,track.mcp$area)
+    # #let's save the MCP data 
+    # fname<-paste0("MCP", "_", i, ".jpeg") #my file name of image 
+    # jpeg(file=fname,height = 500,width = 300)  # to save the image
+    # plot(track)
+    # plot(track.mcp,col=alpha(1:5,0.5),add=TRUE)
+    # dev.off() # to complete the writing process and return output to your monitor
+  }
+  par(mfrow=c(1,1))
+  plot(mcpArea)
+  plot(track)
+  plot(track.mcp,col=alpha(1:5,0.5),add=TRUE)
+  #export the MCPdata for analyzing the monthly area growth pattern in desktop
+  write.csv(mcpArea,'yearly_ MCP_ASF_data1.csv')
+  # let's test the stationary of time series data 
+  #Dickey-Fuller Test
+  adf.test(mcpArea) 
+  pp.test(mcpArea) #Phillips-Perron Unit Root Test
+  
+  # examining the logistic growth pattern we have fixed carrying capacity (asymptot value)
+  # so, we are examining with normal logistic growth as y=(K/1+exp(lamda*t)) (K=105,938.58)
+  tFrame<-seq(length(mcpArea[,1]))
+  #examine initial start parameter
+  sValue<-coef(lm(logit(mcpArea/100000)~tFrame)) # start value estimation 
+  # let's fit the growth pattern 
+  McpGroth<-nls(mcpArea~100266/(1+exp(-(a+lamda*tFrame))),
+                start=list(a=sValue[1],lamda=sValue[2]),trace=TRUE)
+  AIC(McpGroth)
+  BIC(McpGroth)
+  print(c(AIC(McpGroth)[1],BIC(McpGroth)[1]))
+  # McpGroth<-nls(mcpArea~105938.58/(1+exp(-(lamda*tFrame))),
+  #               start=list(lamda=0.011),trace=TRUE)
+  print(summary(McpGroth))
+  a<-coef(McpGroth)[1]
+  lamda<-coef(McpGroth)[2]
+  tPd<-c(1:length(mcpArea))
+  # yP<-105938.58/(1+exp(-(a+lamda*tPd))) # Mcp area with covering some part of water
+  yP<-100266/(1+exp(-(a+lamda*tPd)))  # total land of South Korea
+  R2<-RSQUARE(y_actual = mcpArea,y_predict =  yP)
+  ME<-MAPE(y_actual = mcpArea,y_predict =  yP)
+  print(c(R2,ME))
+  plot(yP,type="l")
+  #export the MCPdata for analyzing the monthly area growth pattern in desktop
+  write.csv(yP,'Predicted_yearly MCP_ASF_data1.csv')
+  
+}
